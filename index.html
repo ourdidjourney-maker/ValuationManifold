@@ -396,7 +396,14 @@ document.getElementById('animBtn').addEventListener('click', () => {
 });
 
 // ── Init ─────────────────────────────────────────────────
-window.addEventListener('resize', () => { resize(); draw(); });
+// ResizeObserver catches both window resize AND browser zoom
+const ro = new ResizeObserver(() => { resize(); draw(); });
+ro.observe(canvas);
+// Also catch devicePixelRatio changes (zoom) via matchMedia
+(function watchZoom() {
+  const mql = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+  mql.addEventListener('change', () => { resize(); draw(); watchZoom(); }, { once: true });
+})();
 resize();
 draw();
 </script>
