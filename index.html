@@ -169,9 +169,10 @@ function rowCenterY(n) {
 // For values between decades, interpolate fractionally between slots.
 function valToY(val) {
   const max        = resolution * 10;
+  if (val <= 1)   return sliderBot;
+  if (val >= max) return sliderTop;
   const totalSlots = resolution + 1;
   const slotH      = (sliderBot - sliderTop) / (totalSlots - 1);
-  // slot index: max→0, max-10→1, ..., 1→resolution (approx)
   const slotIndex  = (max - val) / 10;
   return sliderTop + slotIndex * slotH;
 }
