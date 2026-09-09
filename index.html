@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Simplified General Equivalency Modeling</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #f4f3f0;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+  font-family: 'Georgia', serif;
+}
+.title-bar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px 24px;
+  border-bottom: 1px solid #d0cec9;
+  flex-shrink: 0;
+  position: relative;
+}
+.title-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+}
+.page-title {
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0.26em;
+  color: #666;
+  text-transform: uppercase;
+}
+.page-subtitle {
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 0.18em;
+  color: #999;
+  text-transform: uppercase;
+  font-family: 'Courier New', monospace;
+}
+.anim-btn {
+  position: absolute;
+  right: 20px;
+  font-family: 'Courier New', monospace;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  color: #aaa;
+  border: 1px solid #ccc;
+  padding: 4px 9px;
+  cursor: pointer;
+  user-select: none;
+  top: 50%;
+  transform: translateY(-50%);
+}
+.anim-btn.off { color: #ccc; border-color: #e0e0e0; }
+canvas { display: block; flex: 1; width: 100%; }
+</style>
+</head>
+<body>
+<div class="title-bar">
+  <div class="title-stack">
+    <span class="page-title">Simplified General Equivalency Modeling</span>
+    <span class="page-subtitle">Valuation Manifold</span>
+  </div>
+  <span class="anim-btn" id="animBtn">ANIM ON</span>
+</div>
+<canvas id="c"></canvas>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx    = canvas.getContext('2d');
+
+let lv = null, rv = null, animOn = true;
+
+// ── Fonts / colors ───────────────────────────────────────
+const NUM_FONT    = "900 56px Georgia, serif";
+const CIRCLE_FONT = "900 36px Georgia, serif";
+const LBL_FONT    = "700 11px 'Courier New', monospace";
+const SLASH_FONT  = "300 52px Georgia, serif";
+const RATIO_FONT  = "700 38px Georgia, serif";
+const NUM_COLOR   = "#1a1a1a";
+const SEL_COLOR   = "#cc2200";
+const LBL_COLOR   = "#999";
+const NUM_COUNT   = 10;
+const ROW_H       = 68;
+
+// ── Layout ───────────────────────────────────────────────
+let W, H, colLX, colRX, centerX, centerY, ringR, rowTop;
+
+function resize() {
+  const dpr  = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  canvas.width  = rect.width  * dpr;
+  canvas.height = rect.height * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  W = rect.width; H = rect.height;
+  rowTop  = (H - NUM_COUNT * ROW_H) / 2;
+  centerX = W / 2; centerY = H / 2;
+  ringR   = 60;
+  const gap = 55;
+  colLX = centerX - ringR - gap;
+  colRX = centerX + ringR + gap;
+}
+
+function rowCenterY(n) {
+  return rowTop + (NUM_COUNT - n) * ROW_H + ROW_H / 2;
+}
+
+// ── Animation state ──────────────────────────────────────
+// Per-number pulse state
+const pulses = {}; // n+side -> { start, scale, fromColor, toColor }
+
+// Ring spring
+let ringSpring = { scale: 1, vel: 0 };
+
+// Orbit arc (both selected)
+let orbitAngle = 0;
+let orbitActive = false;
+
+// Main rAF handle
+let rafId = null;
+let lastT  = null;
+
+function startLoop() {
+  if (rafId) return;
+  lastT = null;
+  function loop(t) {
+    const dt = lastT ? Math.min((t - lastT) / 1000, 0.05) : 0;
+    lastT = t;
+    update(dt);
+    draw();
+    const still = isSettled();
+    if (!still) rafId = requestAnimationFrame(loop);
+    else        rafId = null;
+  }
+  rafId = requestAnimationFrame(loop);
+}
+
+function isSettled() {
+  if (Object.keys(pulses).length) return false;
+  if (Math.abs(ringSpring.vel) > 0.001 || Math.abs(ringSpring.scale - 1) > 0.001) return false;
+  if (orbitActive && animOn) return false;
+  return true;
+}
+
+function update(dt) {
+  // Pulse each active number
+  for (const key of Object.keys(pulses)) {
+    const p = pulses[key];
+    const elapsed = (performance.now() - p.start) / 1000;
+    if (elapsed > 0.35) { delete pulses[key]; continue; }
+    const t = elapsed / 0.35;
+    // spring envelope: up fast, settle back
+    p.scale = 1 + 0.18 * Math.sin(t * Math.PI) * Math.pow(1 - t, 0.5);
+  }
+
+  // Ring spring — target scale 1
+  const stiffness = 280, damping = 18;
+  const disp = ringSpring.scale - 1;
+  const acc  = -stiffness * disp - damping * ringSpring.vel;
+  ringSpring.vel   += acc * dt;
+  ringSpring.scale += ringSpring.vel * dt;
+
+  // Orbit
+  if (orbitActive && animOn) {
+    orbitAngle = (orbitAngle + dt * 1.4) % (Math.PI * 2);
+  }
+}
+
+// ── Trigger animations ───────────────────────────────────
+function triggerPulse(side, n) {
+  if (!animOn) return;
+  pulses[side + n] = { start: performance.now(), scale: 1 };
+}
+
+function triggerRing(both) {
+  if (!animOn) return;
+  ringSpring.vel = both ? 12 : 6;
+}
+
+// ── Draw helpers ─────────────────────────────────────────
+function drawNum(n, cx, cy, selected, scale) {
+  const color = selected ? SEL_COLOR : NUM_COLOR;
+  ctx.save();
+  ctx.translate(cx, cy);
+  if (scale && scale !== 1) ctx.scale(scale, scale);
+
+  if (n === 10) {
+    ctx.beginPath();
+    ctx.arc(0, 0, 33, 0, Math.PI * 2);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+    ctx.font = CIRCLE_FONT;
+    ctx.fillStyle = color;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('1', 0, 0);
+  } else {
+    ctx.font = NUM_FONT;
+    ctx.fillStyle = color;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(String(n), 0, 0);
+  }
+  ctx.restore();
+}
+
+function drawLabel(text, x, y, selected, align) {
+  ctx.font = LBL_FONT;
+  ctx.fillStyle = selected ? SEL_COLOR : LBL_COLOR;
+  ctx.textAlign = align;
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, x, y);
+}
+
+function drawRatio() {
+  const cx = centerX, cy = centerY;
+  const rs = ringSpring.scale;
+
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.scale(rs, rs);
+
+  // Main ring
+  ctx.beginPath();
+  ctx.arc(0, 0, ringR, 0, Math.PI * 2);
+  ctx.strokeStyle = NUM_COLOR;
+  ctx.lineWidth = 2.5;
+  ctx.stroke();
+
+  // Orbit arc when both selected
+  if (orbitActive && animOn) {
+    const arcLen = Math.PI * 0.55;
+    ctx.beginPath();
+    ctx.arc(0, 0, ringR, orbitAngle, orbitAngle + arcLen);
+    ctx.strokeStyle = 'rgba(26,26,26,0.22)';
+    ctx.lineWidth = 4;
+    ctx.stroke();
+    // second arc opposite side
+    ctx.beginPath();
+    ctx.arc(0, 0, ringR, orbitAngle + Math.PI, orbitAngle + Math.PI + arcLen);
+    ctx.strokeStyle = 'rgba(26,26,26,0.12)';
+    ctx.lineWidth = 3;
+    ctx.stroke();
+  }
+
+  ctx.restore();
+
+  // Ratio text (not scaled with spring)
+  if (lv === null && rv === null) {
+    ctx.font = SLASH_FONT;
+    ctx.fillStyle = '#bbb';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('—/—', cx, cy);
+    return;
+  }
+
+  let offset = null, rational = null;
+  if (lv !== null && rv !== null) {
+    const lo = Math.min(lv, rv), hi = Math.max(lv, rv);
+    offset   = Math.max(0, hi - lo - 1);
+    rational = offset + 2;
+  } else if (rv !== null) {
+    rational = rv;
+  }
+
+  const offStr = offset   !== null ? String(offset)  : '—';
+  const ratStr = rational !== null ? String(rational) : '—';
+  const largest = (offset !== null && rational !== null)
+    ? (offset >= rational ? 'off' : 'rat') : null;
+
+  ctx.font = RATIO_FONT;
+  const offW = ctx.measureText(offStr).width;
+  const ratW = ctx.measureText(ratStr).width;
+  ctx.font = SLASH_FONT;
+  const slashW = ctx.measureText('/').width;
+  const totalW = offW + slashW + ratW + 8;
+  const startX = cx - totalW / 2;
+
+  // Offset
+  ctx.font = RATIO_FONT;
+  ctx.fillStyle = NUM_COLOR;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(offStr, startX, cy);
+  if (largest === 'off' && offset !== null) {
+    ctx.font = RATIO_FONT;
+    const m = ctx.measureText(offStr);
+    const uly = cy + (m.actualBoundingBoxDescent || 12) + 3;
+    ctx.beginPath();
+    ctx.strokeStyle = NUM_COLOR;
+    ctx.lineWidth = 2;
+    ctx.moveTo(startX, uly);
+    ctx.lineTo(startX + offW, uly);
+    ctx.stroke();
+  }
+
+  // Slash
+  ctx.font = SLASH_FONT;
+  ctx.fillStyle = NUM_COLOR;
+  ctx.textAlign = 'left';
+  const slashX = startX + offW + 2;
+  ctx.fillText('/', slashX, cy);
+
+  // Rational
+  ctx.font = RATIO_FONT;
+  ctx.fillStyle = NUM_COLOR;
+  ctx.textAlign = 'left';
+  const ratX = slashX + slashW + 2;
+  ctx.fillText(ratStr, ratX, cy);
+  if (largest === 'rat' && rational !== null) {
+    ctx.font = RATIO_FONT;
+    const m = ctx.measureText(ratStr);
+    const uly = cy + (m.actualBoundingBoxDescent || 12) + 3;
+    ctx.beginPath();
+    ctx.strokeStyle = NUM_COLOR;
+    ctx.lineWidth = 2;
+    ctx.moveTo(ratX, uly);
+    ctx.lineTo(ratX + ratW, uly);
+    ctx.stroke();
+  }
+}
+
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+
+  for (let n = 1; n <= NUM_COUNT; n++) {
+    const cy   = rowCenterY(n);
+    const selL = lv === n;
+    const selR = rv === n;
+    const lblL = selL ? 'Whole' : 'Whole,N';
+    const lblR = selR ? 'Whole' : 'Whole,N';
+
+    const scaleL = (pulses['L' + n] ? pulses['L' + n].scale : 1);
+    const scaleR = (pulses['R' + n] ? pulses['R' + n].scale : 1);
+
+    const lNumX = colLX - 26;
+    drawNum(n, lNumX, cy, selL, scaleL);
+    const lLblOffset = n === 10 ? colLX - 72 : colLX - 56;
+    drawLabel(lblL, lLblOffset, cy, selL, 'right');
+
+    const rNumX = colRX + 26;
+    drawNum(n, rNumX, cy, selR, scaleR);
+    const rLblOffset = n === 10 ? colRX + 72 : colRX + 56;
+    drawLabel(lblR, rLblOffset, cy, selR, 'left');
+  }
+
+  drawRatio();
+}
+
+// ── Hit test ─────────────────────────────────────────────
+function hitTest(mx, my) {
+  for (let n = 1; n <= NUM_COUNT; n++) {
+    const cy = rowCenterY(n);
+    const lx1 = colLX - 52, lx2 = colLX + 4;
+    if (mx >= lx1 && mx <= lx2 && my >= cy - ROW_H/2 && my <= cy + ROW_H/2)
+      return { side: 'L', n };
+    const rx1 = colRX - 4, rx2 = colRX + 52;
+    if (mx >= rx1 && mx <= rx2 && my >= cy - ROW_H/2 && my <= cy + ROW_H/2)
+      return { side: 'R', n };
+  }
+  return null;
+}
+
+// ── Input ────────────────────────────────────────────────
+canvas.addEventListener('click', e => {
+  const rect = canvas.getBoundingClientRect();
+  const hit  = hitTest(e.clientX - rect.left, e.clientY - rect.top);
+  if (!hit) return;
+  const { side, n } = hit;
+  if (side === 'L') lv = (lv === n) ? null : n;
+  else              rv = (rv === n) ? null : n;
+
+  const both = lv !== null && rv !== null;
+  triggerPulse(side, n);
+  triggerRing(both);
+  orbitActive = both;
+  startLoop();
+});
+
+document.getElementById('animBtn').addEventListener('click', () => {
+  animOn = !animOn;
+  const b = document.getElementById('animBtn');
+  b.textContent = animOn ? 'ANIM ON' : 'ANIM OFF';
+  b.classList.toggle('off', !animOn);
+  if (!animOn) { orbitActive = false; }
+  startLoop();
+});
+
+// ── Init ─────────────────────────────────────────────────
+window.addEventListener('resize', () => { resize(); draw(); });
+resize();
+draw();
+</script>
+</body>
+</html>
