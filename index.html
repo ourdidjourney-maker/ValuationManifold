@@ -44,9 +44,14 @@ body {
   text-transform: uppercase;
   font-family: 'Courier New', monospace;
 }
-.anim-btn {
+.controls {
   position: absolute;
   right: 20px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.ctrl-btn {
   font-family: 'Courier New', monospace;
   font-size: 9px;
   letter-spacing: 0.1em;
@@ -55,10 +60,10 @@ body {
   padding: 4px 9px;
   cursor: pointer;
   user-select: none;
-  top: 50%;
-  transform: translateY(-50%);
+  background: none;
 }
-.anim-btn.off { color: #ccc; border-color: #e0e0e0; }
+.ctrl-btn:hover { color: #444; border-color: #888; }
+.ctrl-btn.off   { color: #ccc; border-color: #e0e0e0; }
 #stage {
   flex: 1;
   position: relative;
@@ -78,7 +83,10 @@ canvas {
     <span class="page-title">Simplified General Equivalency Modeling</span>
     <span class="page-subtitle">Valuation Manifold</span>
   </div>
-  <span class="anim-btn" id="animBtn">ANIM ON</span>
+  <div class="controls">
+    <button class="ctrl-btn" id="resBtn">RES (1)</button>
+    <button class="ctrl-btn" id="animBtn">ANIM ON</button>
+  </div>
 </div>
 <div id="stage">
   <canvas id="c"></canvas>
@@ -88,21 +96,43 @@ canvas {
 const canvas = document.getElementById('c');
 const ctx    = canvas.getContext('2d');
 
-let lv = null, rv = null, animOn = true;
+// ── State ────────────────────────────────────────────────
+let resolution = 1;   // 1–10
+let animOn     = true;
 
+// Res 1: row selection (1–10)
+let lv = null, rv = null;
+
+// Res 2+: slider values (1 to resolution*10), default 1
+let lSlider = 1, rSlider = 1;
+
+function lVal() {
+  if (resolution === 1) return lv;
+  return lSlider;
+}
+function rVal() {
+  if (resolution === 1) return rv;
+  return rSlider;
+}
+
+// ── Fonts / colors ───────────────────────────────────────
 function numFont()    { return `900 ${Math.round(ROW_H * 0.78)}px Georgia, serif`; }
 function circleFont() { return `900 ${Math.round(ROW_H * 0.5)}px Georgia, serif`; }
 function lblFont()    { return `700 ${Math.max(9, Math.round(ROW_H * 0.16))}px 'Courier New', monospace`; }
 function slashFont()  { return `300 ${Math.round(ROW_H * 0.72)}px Georgia, serif`; }
 function ratioFont()  { return `700 ${Math.round(ROW_H * 0.52)}px Georgia, serif`; }
-const NUM_COLOR   = "#1a1a1a";
-const SEL_COLOR   = "#cc2200";
-const LBL_COLOR   = "#999";
-const NUM_COUNT   = 10;
-let   ROW_H       = 68; // recalculated in resize
+function valFont()    { return `700 ${Math.round(ROW_H * 0.65)}px Georgia, serif`; }
+
+const NUM_COLOR  = "#1a1a1a";
+const SEL_COLOR  = "#cc2200";
+const LBL_COLOR  = "#999";
+const TRACK_COLOR = "#ccc";
+const NUM_COUNT  = 10;
+let   ROW_H      = 68;
 
 // ── Layout ───────────────────────────────────────────────
 let W, H, colLX, colRX, centerX, centerY, ringR, rowTop;
+let sliderTop, sliderBot, sliderX_L, sliderX_R, sliderW;
 
 function resize() {
   const dpr  = window.devicePixelRatio || 1;
@@ -111,37 +141,56 @@ function resize() {
   canvas.height = rect.height * dpr;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   W = rect.width; H = rect.height;
-
-  // Fill the full height — no dead space
-  const padding = 20; // small top/bottom breathing room
-  ROW_H   = Math.floor((H - padding * 2) / NUM_COUNT);
-  rowTop  = padding;
-  centerX = W / 2;
-  centerY = H / 2;
-  ringR   = Math.min(60, ROW_H * 0.85);
+  const padding = 20;
+  ROW_H    = Math.floor((H - padding * 2) / NUM_COUNT);
+  rowTop   = padding;
+  centerX  = W / 2;
+  centerY  = H / 2;
+  ringR    = Math.min(72, ROW_H * 0.95);
   const gap = Math.max(40, ringR - 5);
-  colLX = centerX - ringR - gap;
-  colRX = centerX + ringR + gap;
+  colLX    = centerX - ringR - gap;
+  colRX    = centerX + ringR + gap;
+
+  // Slider geometry — pad top and bottom by circle radius so nothing clips
+  const sliderPad = Math.round(ROW_H * 0.36) + 8;
+  sliderTop = rowTop + sliderPad;
+  sliderBot = rowTop + NUM_COUNT * ROW_H - sliderPad;
+  sliderW   = 44;
+  sliderX_L = colLX - 26;   // center x of left slider
+  sliderX_R = colRX + 26;   // center x of right slider
 }
 
 function rowCenterY(n) {
   return rowTop + (NUM_COUNT - n) * ROW_H + ROW_H / 2;
 }
 
-// ── Animation state ──────────────────────────────────────
-// Per-number pulse state
-const pulses = {}; // n+side -> { start, scale, fromColor, toColor }
+// Each slot represents 10 units. Slot 0 = max (top), slot resolution = 1 (bottom).
+// value 50 at res5 → slot 0. value 40 → slot 1. value 1 → slot 5 (= resolution).
+// For values between decades, interpolate fractionally between slots.
+function valToY(val) {
+  const max        = resolution * 10;
+  const totalSlots = resolution + 1;
+  const slotH      = (sliderBot - sliderTop) / (totalSlots - 1);
+  // slot index: max→0, max-10→1, ..., 1→resolution (approx)
+  const slotIndex  = (max - val) / 10;
+  return sliderTop + slotIndex * slotH;
+}
 
-// Ring spring
+function yToVal(y) {
+  const max        = resolution * 10;
+  const totalSlots = resolution + 1;
+  const slotH      = (sliderBot - sliderTop) / (totalSlots - 1);
+  const clampedY   = Math.max(sliderTop, Math.min(sliderBot, y));
+  const slotIndex  = (clampedY - sliderTop) / slotH;
+  const val        = max - slotIndex * 10;
+  return Math.max(1, Math.min(max, Math.round(val)));
+}
+
+// ── Animation ────────────────────────────────────────────
+const pulses = {};
 let ringSpring = { scale: 1, vel: 0 };
-
-// Orbit arc (both selected)
-let orbitAngle = 0;
-let orbitActive = false;
-
-// Main rAF handle
-let rafId = null;
-let lastT  = null;
+let orbitAngle = 0, orbitActive = false;
+let rafId = null, lastT = null;
 
 function startLoop() {
   if (rafId) return;
@@ -149,81 +198,49 @@ function startLoop() {
   function loop(t) {
     const dt = lastT ? Math.min((t - lastT) / 1000, 0.05) : 0;
     lastT = t;
-    update(dt);
-    draw();
-    const still = isSettled();
-    if (!still) rafId = requestAnimationFrame(loop);
-    else        rafId = null;
+    update(dt); draw();
+    if (!isSettled()) rafId = requestAnimationFrame(loop);
+    else              rafId = null;
   }
   rafId = requestAnimationFrame(loop);
 }
-
 function isSettled() {
   if (Object.keys(pulses).length) return false;
   if (Math.abs(ringSpring.vel) > 0.001 || Math.abs(ringSpring.scale - 1) > 0.001) return false;
   if (orbitActive && animOn) return false;
   return true;
 }
-
 function update(dt) {
-  // Pulse each active number
   for (const key of Object.keys(pulses)) {
     const p = pulses[key];
-    const elapsed = (performance.now() - p.start) / 1000;
-    if (elapsed > 0.35) { delete pulses[key]; continue; }
-    const t = elapsed / 0.35;
-    // spring envelope: up fast, settle back
+    const t = Math.min((performance.now() - p.start) / 350, 1);
+    if (t >= 1) { delete pulses[key]; continue; }
     p.scale = 1 + 0.18 * Math.sin(t * Math.PI) * Math.pow(1 - t, 0.5);
   }
-
-  // Ring spring — target scale 1
-  const stiffness = 280, damping = 18;
   const disp = ringSpring.scale - 1;
-  const acc  = -stiffness * disp - damping * ringSpring.vel;
-  ringSpring.vel   += acc * dt;
-  ringSpring.scale += ringSpring.vel * dt;
-
-  // Orbit
-  if (orbitActive && animOn) {
-    orbitAngle = (orbitAngle + dt * 1.4) % (Math.PI * 2);
-  }
+  const acc  = -280 * disp - 18 * ringSpring.vel;
+  ringSpring.vel += acc * dt; ringSpring.scale += ringSpring.vel * dt;
+  if (orbitActive && animOn) orbitAngle = (orbitAngle + dt * 1.4) % (Math.PI * 2);
 }
+function triggerPulse(key) { if (!animOn) return; pulses[key] = { start: performance.now(), scale: 1 }; }
+function triggerRing(both) { if (!animOn) return; ringSpring.vel = both ? 12 : 6; }
 
-// ── Trigger animations ───────────────────────────────────
-function triggerPulse(side, n) {
-  if (!animOn) return;
-  pulses[side + n] = { start: performance.now(), scale: 1 };
-}
-
-function triggerRing(both) {
-  if (!animOn) return;
-  ringSpring.vel = both ? 12 : 6;
-}
-
-// ── Draw helpers ─────────────────────────────────────────
+// ── Draw: res 1 column number ────────────────────────────
 function drawNum(n, cx, cy, selected, scale) {
   const color = selected ? SEL_COLOR : NUM_COLOR;
   ctx.save();
   ctx.translate(cx, cy);
   if (scale && scale !== 1) ctx.scale(scale, scale);
-
-  if (n === 10) {
+  if (n === NUM_COUNT) {
     const r = Math.round(ROW_H * 0.46);
-    ctx.beginPath();
-    ctx.arc(0, 0, r, 0, Math.PI * 2);
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 2.5;
-    ctx.stroke();
-    ctx.font = circleFont();
-    ctx.fillStyle = color;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
+    ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2);
+    ctx.strokeStyle = color; ctx.lineWidth = 2.5; ctx.stroke();
+    ctx.font = circleFont(); ctx.fillStyle = color;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText('1', 0, 0);
   } else {
-    ctx.font = numFont();
-    ctx.fillStyle = color;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
+    ctx.font = numFont(); ctx.fillStyle = color;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText(String(n), 0, 0);
   }
   ctx.restore();
@@ -232,62 +249,115 @@ function drawNum(n, cx, cy, selected, scale) {
 function drawLabel(text, x, y, selected, align) {
   ctx.font = lblFont();
   ctx.fillStyle = selected ? SEL_COLOR : LBL_COLOR;
-  ctx.textAlign = align;
-  ctx.textBaseline = 'middle';
+  ctx.textAlign = align; ctx.textBaseline = 'middle';
   ctx.fillText(text, x, y);
 }
 
+// ── Draw: slider column for res > 1 ─────────────────────
+function drawSlider(side) {
+  const cx      = side === 'L' ? sliderX_L : sliderX_R;
+  const val     = side === 'L' ? lSlider   : rSlider;
+  const max     = resolution * 10;
+  const handleR = Math.round(ROW_H * 0.22);
+  const topR    = Math.round(ROW_H * 0.36);
+  const hy      = valToY(val);
+
+  // ── Evenly space all fixed circles by pixel division ──
+  // Slots: top-label (res), decade markers (res-1 down to 1), bottom-label (1)
+  // Total slots = resolution + 1
+  const totalSlots = resolution + 1;
+  const slotH      = (sliderBot - sliderTop) / (totalSlots - 1);
+  function slotY(i) { return sliderTop + i * slotH; }
+
+  // ── Circles for track gap calculation (use slot positions) ──
+  const circles = [];
+  for (let i = 0; i < totalSlots; i++) circles.push({ y: slotY(i), r: topR });
+  circles.push({ y: hy, r: handleR });
+  circles.sort((a, b) => a.y - b.y);
+
+  // ── Track segments ──
+  ctx.strokeStyle = TRACK_COLOR; ctx.lineWidth = 2;
+  let cursor = sliderTop;
+  for (const c of circles) {
+    const segEnd = c.y - c.r - 3;
+    if (cursor < segEnd) { ctx.beginPath(); ctx.moveTo(cx, cursor); ctx.lineTo(cx, segEnd); ctx.stroke(); }
+    cursor = c.y + c.r + 3;
+  }
+  if (cursor < sliderBot) { ctx.beginPath(); ctx.moveTo(cx, cursor); ctx.lineTo(cx, sliderBot); ctx.stroke(); }
+
+  // ── Fixed circles: top=resolution label, middle=decade markers, bottom=1 ──
+  for (let i = 0; i < totalSlots; i++) {
+    const cy    = slotY(i);
+    const isTop = i === 0;
+    const isBot = i === totalSlots - 1;
+    // slot 0 = resolution (top), slot 1 = resolution-1, ..., slot resolution = 1 (bottom)
+    const decadeVal = (totalSlots - 1 - i); // 0 at bottom slot, resolution at top slot
+    const label = isBot ? '1' : String(decadeVal);
+    const color = isTop ? NUM_COLOR : '#bbb';
+
+    ctx.beginPath(); ctx.arc(cx, cy, topR, 0, Math.PI * 2);
+    ctx.fillStyle = '#f4f3f0'; ctx.fill();
+    ctx.strokeStyle = color; ctx.lineWidth = isTop ? 2 : 1.5; ctx.stroke();
+
+    if (isTop && resolution === 10) {
+      ctx.beginPath(); ctx.arc(cx, cy, topR + 6, 0, Math.PI * 2);
+      ctx.strokeStyle = NUM_COLOR; ctx.lineWidth = 1.5; ctx.stroke();
+    }
+
+    ctx.font = isBot ? numFont() : circleFont();
+    ctx.fillStyle = color;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(label, cx, cy);
+  }
+
+  // ── Handle ──
+  ctx.beginPath(); ctx.arc(cx, hy, handleR, 0, Math.PI * 2);
+  ctx.fillStyle = SEL_COLOR; ctx.fill();
+
+  let handleText;
+  if (val % 10 === 0) {
+    const decade = val / 10;
+    handleText = decade === 10 ? '(1)' : `(${decade})`;
+  } else {
+    handleText = String(val);
+  }
+  ctx.font = `700 ${Math.round(handleR * (val % 10 === 0 ? 0.7 : 1.1))}px Georgia, serif`;
+  ctx.fillStyle = '#fff';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(handleText, cx, hy);
+}
+
+// ── Draw ratio ───────────────────────────────────────────
 function drawRatio() {
   const cx = centerX, cy = centerY;
   const rs = ringSpring.scale;
 
   ctx.save();
-  ctx.translate(cx, cy);
-  ctx.scale(rs, rs);
-
-  // Main ring
-  ctx.beginPath();
-  ctx.arc(0, 0, ringR, 0, Math.PI * 2);
-  ctx.strokeStyle = NUM_COLOR;
-  ctx.lineWidth = 2.5;
-  ctx.stroke();
-
-  // Orbit arc when both selected
+  ctx.translate(cx, cy); ctx.scale(rs, rs);
+  ctx.beginPath(); ctx.arc(0, 0, ringR, 0, Math.PI * 2);
+  ctx.strokeStyle = NUM_COLOR; ctx.lineWidth = 2.5; ctx.stroke();
   if (orbitActive && animOn) {
     const arcLen = Math.PI * 0.55;
-    ctx.beginPath();
-    ctx.arc(0, 0, ringR, orbitAngle, orbitAngle + arcLen);
-    ctx.strokeStyle = 'rgba(26,26,26,0.22)';
-    ctx.lineWidth = 4;
-    ctx.stroke();
-    // second arc opposite side
-    ctx.beginPath();
-    ctx.arc(0, 0, ringR, orbitAngle + Math.PI, orbitAngle + Math.PI + arcLen);
-    ctx.strokeStyle = 'rgba(26,26,26,0.12)';
-    ctx.lineWidth = 3;
-    ctx.stroke();
+    ctx.beginPath(); ctx.arc(0, 0, ringR, orbitAngle, orbitAngle + arcLen);
+    ctx.strokeStyle = 'rgba(26,26,26,0.22)'; ctx.lineWidth = 4; ctx.stroke();
+    ctx.beginPath(); ctx.arc(0, 0, ringR, orbitAngle + Math.PI, orbitAngle + Math.PI + arcLen);
+    ctx.strokeStyle = 'rgba(26,26,26,0.12)'; ctx.lineWidth = 3; ctx.stroke();
   }
-
   ctx.restore();
 
-  // Ratio text (not scaled with spring)
-  if (lv === null && rv === null) {
-    ctx.font = slashFont();
-    ctx.fillStyle = '#bbb';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText('—/—', cx, cy);
-    return;
+  const lvA = lVal(), rvA = rVal();
+  if (lvA === null && rvA === null) {
+    ctx.font = slashFont(); ctx.fillStyle = '#bbb';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('—/—', cx, cy); return;
   }
 
   let offset = null, rational = null;
-  if (lv !== null && rv !== null) {
-    const lo = Math.min(lv, rv), hi = Math.max(lv, rv);
+  if (lvA !== null && rvA !== null) {
+    const lo = Math.min(lvA, rvA), hi = Math.max(lvA, rvA);
     offset   = Math.max(0, hi - lo - 1);
-    rational = offset + 2;
-  } else if (rv !== null) {
-    rational = rv;
-  }
+    rational = hi - lo + 1;        // full span inclusive
+  } else if (rvA !== null) { rational = rvA; }
 
   const offStr = offset   !== null ? String(offset)  : '—';
   const ratStr = rational !== null ? String(rational) : '—';
@@ -299,118 +369,146 @@ function drawRatio() {
   const ratW = ctx.measureText(ratStr).width;
   ctx.font = slashFont();
   const slashW = ctx.measureText('/').width;
-  const totalW = offW + slashW + ratW + 8;
-  const startX = cx - totalW / 2;
+  const startX = cx - (offW + slashW + ratW + 8) / 2;
 
-  // Offset
-  ctx.font = ratioFont();
-  ctx.fillStyle = NUM_COLOR;
-  ctx.textAlign = 'left';
-  ctx.textBaseline = 'middle';
+  ctx.font = ratioFont(); ctx.fillStyle = NUM_COLOR;
+  ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
   ctx.fillText(offStr, startX, cy);
   if (largest === 'off' && offset !== null) {
-    ctx.font = ratioFont();
     const m = ctx.measureText(offStr);
     const uly = cy + (m.actualBoundingBoxDescent || 12) + 3;
-    ctx.beginPath();
-    ctx.strokeStyle = NUM_COLOR;
-    ctx.lineWidth = 2;
-    ctx.moveTo(startX, uly);
-    ctx.lineTo(startX + offW, uly);
-    ctx.stroke();
+    ctx.beginPath(); ctx.strokeStyle = NUM_COLOR; ctx.lineWidth = 2;
+    ctx.moveTo(startX, uly); ctx.lineTo(startX + offW, uly); ctx.stroke();
   }
-
-  // Slash
-  ctx.font = slashFont();
-  ctx.fillStyle = NUM_COLOR;
+  ctx.font = slashFont(); ctx.fillStyle = NUM_COLOR;
   ctx.textAlign = 'left';
   const slashX = startX + offW + 2;
   ctx.fillText('/', slashX, cy);
-
-  // Rational
-  ctx.font = ratioFont();
-  ctx.fillStyle = NUM_COLOR;
+  ctx.font = ratioFont(); ctx.fillStyle = NUM_COLOR;
   ctx.textAlign = 'left';
   const ratX = slashX + slashW + 2;
   ctx.fillText(ratStr, ratX, cy);
   if (largest === 'rat' && rational !== null) {
-    ctx.font = ratioFont();
     const m = ctx.measureText(ratStr);
     const uly = cy + (m.actualBoundingBoxDescent || 12) + 3;
-    ctx.beginPath();
-    ctx.strokeStyle = NUM_COLOR;
-    ctx.lineWidth = 2;
-    ctx.moveTo(ratX, uly);
-    ctx.lineTo(ratX + ratW, uly);
-    ctx.stroke();
+    ctx.beginPath(); ctx.strokeStyle = NUM_COLOR; ctx.lineWidth = 2;
+    ctx.moveTo(ratX, uly); ctx.lineTo(ratX + ratW, uly); ctx.stroke();
   }
 }
 
+// ── Main draw ────────────────────────────────────────────
 function draw() {
   ctx.clearRect(0, 0, W, H);
 
-  for (let n = 1; n <= NUM_COUNT; n++) {
-    const cy   = rowCenterY(n);
-    const selL = lv === n;
-    const selR = rv === n;
-    const lblL = selL ? 'Whole' : 'Whole,N';
-    const lblR = selR ? 'Whole' : 'Whole,N';
+  if (resolution === 1) {
+    // Standard clickable columns
+    for (let n = 1; n <= NUM_COUNT; n++) {
+      const cy    = rowCenterY(n);
+      const selL  = lv === n, selR = rv === n;
+      const scaleL = pulses['L'+n] ? pulses['L'+n].scale : 1;
+      const scaleR = pulses['R'+n] ? pulses['R'+n].scale : 1;
 
-    const scaleL = (pulses['L' + n] ? pulses['L' + n].scale : 1);
-    const scaleR = (pulses['R' + n] ? pulses['R' + n].scale : 1);
+      drawNum(n, colLX - 26, cy, selL, scaleL);
+      drawNum(n, colRX + 26, cy, selR, scaleR);
 
-    const lNumX = colLX - 26;
-    drawNum(n, lNumX, cy, selL, scaleL);
-    const circR = Math.round(ROW_H * 0.46);
-    const numHalfW = Math.round(ROW_H * 0.5);
-    const lLblOffset = n === 10 ? colLX - circR - 38 : colLX - numHalfW - 14;
-    drawLabel(lblL, lLblOffset, cy, selL, 'right');
+      const isTop = n === NUM_COUNT;
+      const circR = Math.round(ROW_H * 0.46);
+      let halfW;
+      if (isTop) { halfW = circR + 14; }
+      else { ctx.font = numFont(); halfW = ctx.measureText(String(n)).width / 2 + 10; }
 
-    const rNumX = colRX + 26;
-    drawNum(n, rNumX, cy, selR, scaleR);
-    const rLblOffset = n === 10 ? colRX + circR + 38 : colRX + numHalfW + 14;
-    drawLabel(lblR, rLblOffset, cy, selR, 'left');
+      drawLabel(selL ? 'Whole' : 'Whole,N', colLX - 26 - halfW - 6, cy, selL, 'right');
+      drawLabel(selR ? 'Whole' : 'Whole,N', colRX + 26 + halfW + 6, cy, selR, 'left');
+    }
+  } else {
+    // Slider columns
+    drawSlider('L');
+    drawSlider('R');
   }
 
   drawRatio();
 }
 
-// ── Hit test ─────────────────────────────────────────────
-function hitTest(mx, my) {
+// ── Input: res 1 click ───────────────────────────────────
+canvas.addEventListener('click', e => {
+  if (resolution !== 1) return;
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
   for (let n = 1; n <= NUM_COUNT; n++) {
     const cy = rowCenterY(n);
-    const lx1 = colLX - 52, lx2 = colLX + 4;
-    if (mx >= lx1 && mx <= lx2 && my >= cy - ROW_H/2 && my <= cy + ROW_H/2)
-      return { side: 'L', n };
-    const rx1 = colRX - 4, rx2 = colRX + 52;
-    if (mx >= rx1 && mx <= rx2 && my >= cy - ROW_H/2 && my <= cy + ROW_H/2)
-      return { side: 'R', n };
+    if (mx >= colLX - 52 && mx <= colLX + 4 && Math.abs(my - cy) <= ROW_H / 2) {
+      lv = (lv === n) ? null : n;
+      const both = lv !== null && rv !== null;
+      triggerPulse('L'+n); triggerRing(both);
+      orbitActive = both; startLoop(); return;
+    }
+    if (mx >= colRX - 4 && mx <= colRX + 52 && Math.abs(my - cy) <= ROW_H / 2) {
+      rv = (rv === n) ? null : n;
+      const both = lv !== null && rv !== null;
+      triggerPulse('R'+n); triggerRing(both);
+      orbitActive = both; startLoop(); return;
+    }
   }
-  return null;
-}
-
-// ── Input ────────────────────────────────────────────────
-canvas.addEventListener('click', e => {
-  const rect = canvas.getBoundingClientRect();
-  const hit  = hitTest(e.clientX - rect.left, e.clientY - rect.top);
-  if (!hit) return;
-  const { side, n } = hit;
-  if (side === 'L') lv = (lv === n) ? null : n;
-  else              rv = (rv === n) ? null : n;
-
-  const both = lv !== null && rv !== null;
-  triggerPulse(side, n);
-  triggerRing(both);
-  orbitActive = both;
-  startLoop();
 });
 
+// ── Input: slider drag ───────────────────────────────────
+let dragging = null; // 'L' | 'R' | null
+
+function clampVal(v) { return Math.max(1, Math.min(resolution * 10, v)); }
+
+function sliderPointerDown(e) {
+  if (resolution === 1) return;
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  const tw = sliderW;
+  if (Math.abs(mx - sliderX_L) <= tw && my >= sliderTop && my <= sliderBot) dragging = 'L';
+  else if (Math.abs(mx - sliderX_R) <= tw && my >= sliderTop && my <= sliderBot) dragging = 'R';
+  if (dragging) { updateSlider(e); e.preventDefault(); }
+}
+
+function updateSlider(e) {
+  if (!dragging) return;
+  const rect = canvas.getBoundingClientRect();
+  const my = (e.touches ? e.touches[0].clientY : e.clientY) - rect.top;
+  const val = clampVal(yToVal(my));
+  if (dragging === 'L') lSlider = val;
+  else                  rSlider = val;
+  const both = true; // sliders always have a value
+  triggerRing(lSlider !== 1 || rSlider !== 1 ? true : false);
+  orbitActive = animOn;
+  startLoop();
+}
+
+function sliderPointerUp() {
+  dragging = null;
+  orbitActive = animOn && (resolution > 1 || (lv !== null && rv !== null));
+}
+
+canvas.addEventListener('mousedown',  sliderPointerDown);
+canvas.addEventListener('mousemove',  e => { if (dragging) { updateSlider(e); e.preventDefault(); } });
+canvas.addEventListener('mouseup',    sliderPointerUp);
+canvas.addEventListener('touchstart', sliderPointerDown, { passive: false });
+canvas.addEventListener('touchmove',  e => { if (dragging) { updateSlider(e); e.preventDefault(); } }, { passive: false });
+canvas.addEventListener('touchend',   sliderPointerUp);
+
+// ── Resolution button ────────────────────────────────────
+document.getElementById('resBtn').addEventListener('click', () => {
+  resolution = resolution >= 10 ? 1 : resolution + 1;
+  lv = null; rv = null;
+  lSlider = 1; rSlider = 1;
+  orbitActive = false;
+  const label = resolution === 10 ? 'RES ((1))' : `RES (${resolution})`;
+  document.getElementById('resBtn').textContent = label;
+  draw();
+});
+
+// ── Anim toggle ──────────────────────────────────────────
 document.getElementById('animBtn').addEventListener('click', () => {
   animOn = !animOn;
   const b = document.getElementById('animBtn');
   b.textContent = animOn ? 'ANIM ON' : 'ANIM OFF';
   b.classList.toggle('off', !animOn);
-  if (!animOn) { orbitActive = false; }
+  if (!animOn) orbitActive = false;
   startLoop();
 });
 
