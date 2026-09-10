@@ -158,7 +158,7 @@ function resize() {
   colRX    = centerX + ringR + gap;
 
   // Slider geometry — pad top and bottom by circle radius so nothing clips
-  const sliderPad = Math.round(ROW_H * 0.36) + 8;
+  const sliderPad = Math.round(ROW_H * 0.36) + 16;
   sliderTop = rowTop + sliderPad;
   sliderBot = rowTop + NUM_COUNT * ROW_H - sliderPad;
   sliderW   = 44;
@@ -175,10 +175,10 @@ function rowCenterY(n) {
 // For values between decades, interpolate fractionally between slots.
 function valToY(val) {
   const max        = resolution * 10;
-  if (val <= 1)   return sliderBot;
-  if (val >= max) return sliderTop;
   const totalSlots = resolution + 1;
   const slotH      = (sliderBot - sliderTop) / (totalSlots - 1);
+  if (val <= 1)   return sliderTop + (totalSlots - 1) * slotH; // = sliderBot exactly
+  if (val >= max) return sliderTop;
   const slotIndex  = (max - val) / 10;
   return sliderTop + slotIndex * slotH;
 }
@@ -239,7 +239,7 @@ function drawNum(n, cx, cy, selected, scale) {
   ctx.translate(cx, cy);
   if (scale && scale !== 1) ctx.scale(scale, scale);
   if (n === NUM_COUNT) {
-    const r = Math.round(ROW_H * 0.46);
+    const r = Math.round(ROW_H * 0.36);
     ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2);
     ctx.strokeStyle = color; ctx.lineWidth = 2.5; ctx.stroke();
     ctx.font = circleFont(); ctx.fillStyle = color;
@@ -248,7 +248,8 @@ function drawNum(n, cx, cy, selected, scale) {
   } else {
     ctx.font = numFont(); ctx.fillStyle = color;
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText(String(n), 0, 0);
+    const yOffset = n === 1 ? -Math.round(ROW_H * 0.12) : 0;
+    ctx.fillText(String(n), 0, yOffset);
   }
   ctx.restore();
 }
@@ -278,7 +279,7 @@ function drawSlider(side) {
 
   // ── Circles for track gap calculation (use slot positions) ──
   const circles = [];
-  for (let i = 0; i < totalSlots; i++) circles.push({ y: slotY(i), r: topR });
+  for (let i = 0; i < totalSlots - 1; i++) circles.push({ y: slotY(i), r: topR }); // skip bottom
   circles.push({ y: hy, r: handleR });
   circles.sort((a, b) => a.y - b.y);
 
@@ -302,24 +303,27 @@ function drawSlider(side) {
     const label = isBot ? '1' : (decadeVal === 10 ? '1' : String(decadeVal));
     const color = isTop ? NUM_COLOR : '#bbb';
 
-    ctx.beginPath(); ctx.arc(cx, cy, topR, 0, Math.PI * 2);
-    ctx.fillStyle = '#f4f3f0'; ctx.fill();
-    if (!isBot) {
-      ctx.strokeStyle = color; ctx.lineWidth = isTop ? 2 : 1.5; ctx.stroke();
-    }
-
-    if (isTop && resolution === 10) {
-      ctx.beginPath(); ctx.arc(cx, cy, topR + 6, 0, Math.PI * 2);
-      ctx.strokeStyle = NUM_COLOR; ctx.lineWidth = 1.5; ctx.stroke();
-    }
-
     if (isBot) {
-      ctx.font = numFont(); ctx.fillStyle = NUM_COLOR;
+      // Plain large 1 — no circle, just text
+      ctx.font = numFont();
+      ctx.fillStyle = NUM_COLOR;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('1', cx, cy);
     } else {
-      ctx.font = circleFont(); ctx.fillStyle = color;
+      ctx.beginPath(); ctx.arc(cx, cy, topR, 0, Math.PI * 2);
+      ctx.fillStyle = '#f4f3f0'; ctx.fill();
+      ctx.strokeStyle = color; ctx.lineWidth = isTop ? 2 : 1.5; ctx.stroke();
+
+      if (isTop && resolution === 10) {
+        ctx.beginPath(); ctx.arc(cx, cy, topR + 6, 0, Math.PI * 2);
+        ctx.strokeStyle = NUM_COLOR; ctx.lineWidth = 1.5; ctx.stroke();
+      }
+
+      ctx.font = circleFont();
+      ctx.fillStyle = isTop ? NUM_COLOR : '#bbb';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(label, cx, cy);
     }
-    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText(label, cx, cy);
   }
 
   // ── Handle ──
@@ -327,13 +331,14 @@ function drawSlider(side) {
   ctx.fillStyle = SEL_COLOR; ctx.fill();
 
   let handleText;
-  if (val % 10 === 0) {
-    const decade = val / 10;
-    handleText = decade === 10 ? '(1)' : `(${decade})`;
+  const roundedVal = Math.round(val);
+  if (roundedVal % 10 === 0) {
+    const decade = roundedVal / 10;
+    handleText = decade === 10 ? '((1))' : `(${decade})`;
   } else {
-    handleText = String(val);
+    handleText = String(roundedVal);
   }
-  ctx.font = `700 ${Math.round(handleR * (val % 10 === 0 ? 0.7 : 1.1))}px Georgia, serif`;
+  ctx.font = `700 ${Math.round(handleR * (roundedVal % 10 === 0 ? 0.7 : 1.1))}px Georgia, serif`;
   ctx.fillStyle = '#fff';
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillText(handleText, cx, hy);
@@ -374,8 +379,17 @@ function drawRatio() {
     rational = rvA;
   }
 
-  const offStr = offset   !== null ? String(offset)  : '—';
-  const ratStr = rational !== null ? String(rational) : '—';
+  function otom(n) {
+    if (n === null) return '—';
+    if (n % 10 === 0) {
+      const d = n / 10;
+      return d === 10 ? '((1))' : `(${d})`;
+    }
+    return String(n);
+  }
+
+  const offStr = otom(offset);
+  const ratStr = otom(rational);
   const largest = (offset !== null && rational !== null)
     ? (offset >= rational ? 'off' : 'rat') : null;
 
@@ -445,8 +459,9 @@ function draw() {
       if (isTop) { halfW = circR + 14; }
       else { ctx.font = numFont(); halfW = ctx.measureText(String(n)).width / 2 + 10; }
 
-      drawLabel(selL ? 'Whole' : 'Whole,N', colLX - 26 - halfW - 6, cy, selL, 'right');
-      drawLabel(selR ? 'Whole' : 'Whole,N', colRX + 26 + halfW + 6, cy, selR, 'left');
+      const labelY = cy + (n === 1 ? -Math.round(ROW_H * 0.12) : 0);
+      drawLabel(selL ? 'Whole' : 'Whole,N', colLX - 26 - halfW - 6, labelY, selL, 'right');
+      drawLabel(selR ? 'Whole' : 'Whole,N', colRX + 26 + halfW + 6, labelY, selR, 'left');
     }
   } else {
     // Slider columns
