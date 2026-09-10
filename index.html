@@ -304,15 +304,20 @@ function drawSlider(side) {
 
     ctx.beginPath(); ctx.arc(cx, cy, topR, 0, Math.PI * 2);
     ctx.fillStyle = '#f4f3f0'; ctx.fill();
-    ctx.strokeStyle = color; ctx.lineWidth = isTop ? 2 : 1.5; ctx.stroke();
+    if (!isBot) {
+      ctx.strokeStyle = color; ctx.lineWidth = isTop ? 2 : 1.5; ctx.stroke();
+    }
 
     if (isTop && resolution === 10) {
       ctx.beginPath(); ctx.arc(cx, cy, topR + 6, 0, Math.PI * 2);
       ctx.strokeStyle = NUM_COLOR; ctx.lineWidth = 1.5; ctx.stroke();
     }
 
-    ctx.font = isBot ? numFont() : circleFont();
-    ctx.fillStyle = color;
+    if (isBot) {
+      ctx.font = numFont(); ctx.fillStyle = NUM_COLOR;
+    } else {
+      ctx.font = circleFont(); ctx.fillStyle = color;
+    }
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText(label, cx, cy);
   }
