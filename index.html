@@ -157,13 +157,11 @@ function resize() {
   colLX    = centerX - ringR - gap;
   colRX    = centerX + ringR + gap;
 
-  // Slider geometry — pad top and bottom by circle radius so nothing clips
-  const sliderPad = Math.round(ROW_H * 0.36) + 16;
-  sliderTop = rowTop + sliderPad;
-  sliderBot = rowTop + NUM_COUNT * ROW_H - sliderPad;
+  sliderTop = rowTop + ROW_H / 2;
+  sliderBot = rowTop + (NUM_COUNT - 1) * ROW_H + ROW_H / 2;
   sliderW   = 44;
-  sliderX_L = colLX - 26;   // center x of left slider
-  sliderX_R = colRX + 26;   // center x of right slider
+  sliderX_L = colLX - 26;
+  sliderX_R = colRX + 26;
 }
 
 function rowCenterY(n) {
@@ -267,64 +265,53 @@ function drawSlider(side) {
   const val     = side === 'L' ? lSlider   : rSlider;
   const max     = resolution * 10;
   const handleR = Math.round(ROW_H * 0.22);
-  const topR    = Math.round(ROW_H * 0.36);
+  const circR   = Math.round(ROW_H * 0.36); // radius for decade circles
+  const bot1R   = Math.round(ROW_H * 0.46); // larger radius for bottom 1 to fit numFont
   const hy      = valToY(val);
 
-  // ── Evenly space all fixed circles by pixel division ──
-  // Slots: top-label (res), decade markers (res-1 down to 1), bottom-label (1)
-  // Total slots = resolution + 1
+  // Slots: index 0 = top (resolution), index 1..res-1 = decade markers, index res = bottom (1)
+  // Total = resolution + 1
   const totalSlots = resolution + 1;
   const slotH      = (sliderBot - sliderTop) / (totalSlots - 1);
   function slotY(i) { return sliderTop + i * slotH; }
 
-  // ── Circles for track gap calculation (use slot positions) ──
-  const circles = [];
-  for (let i = 0; i < totalSlots - 1; i++) circles.push({ y: slotY(i), r: topR }); // skip bottom
-  circles.push({ y: hy, r: handleR });
-  circles.sort((a, b) => a.y - b.y);
-
-  // ── Track segments ──
+  // ── Track: ends at sliderBot where bottom 1 sits ──
   ctx.strokeStyle = TRACK_COLOR; ctx.lineWidth = 2;
-  let cursor = sliderTop;
-  for (const c of circles) {
-    const segEnd = c.y - c.r - 3;
-    if (cursor < segEnd) { ctx.beginPath(); ctx.moveTo(cx, cursor); ctx.lineTo(cx, segEnd); ctx.stroke(); }
-    cursor = c.y + c.r + 3;
-  }
-  if (cursor < sliderBot) { ctx.beginPath(); ctx.moveTo(cx, cursor); ctx.lineTo(cx, sliderBot); ctx.stroke(); }
+  ctx.beginPath(); ctx.moveTo(cx, sliderTop); ctx.lineTo(cx, sliderBot); ctx.stroke();
 
-  // ── Fixed circles: top=resolution label, middle=decade markers, bottom=1 ──
-  for (let i = 0; i < totalSlots; i++) {
-    const cy    = slotY(i);
-    const isTop = i === 0;
-    const isBot = i === totalSlots - 1;
-    // slot 0 = resolution (top), slot 1 = resolution-1, ..., slot resolution = 1 (bottom)
-    const decadeVal = (totalSlots - 1 - i); // 0 at bottom slot, resolution at top slot
-    const label = isBot ? '1' : (decadeVal === 10 ? '1' : String(decadeVal));
-    const color = isTop ? NUM_COLOR : '#bbb';
+  // ── Decade circles (all slots except bottom) ──
+  for (let i = 0; i < totalSlots - 1; i++) {
+    const cy     = slotY(i);
+    const isTop  = i === 0;
+    const decadeVal = totalSlots - 1 - i;
+    const label  = decadeVal === 10 ? '1' : String(decadeVal);
+    const color  = isTop ? NUM_COLOR : '#bbb';
 
-    if (isBot) {
-      // Plain large 1 — no circle, just text
-      ctx.font = numFont();
-      ctx.fillStyle = NUM_COLOR;
-      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.fillText('1', cx, cy);
-    } else {
-      ctx.beginPath(); ctx.arc(cx, cy, topR, 0, Math.PI * 2);
-      ctx.fillStyle = '#f4f3f0'; ctx.fill();
-      ctx.strokeStyle = color; ctx.lineWidth = isTop ? 2 : 1.5; ctx.stroke();
+    ctx.beginPath(); ctx.arc(cx, cy, circR, 0, Math.PI * 2);
+    ctx.fillStyle = '#f4f3f0'; ctx.fill();
+    ctx.strokeStyle = color; ctx.lineWidth = isTop ? 2 : 1.5; ctx.stroke();
 
-      if (isTop && resolution === 10) {
-        ctx.beginPath(); ctx.arc(cx, cy, topR + 6, 0, Math.PI * 2);
-        ctx.strokeStyle = NUM_COLOR; ctx.lineWidth = 1.5; ctx.stroke();
-      }
-
-      ctx.font = circleFont();
-      ctx.fillStyle = isTop ? NUM_COLOR : '#bbb';
-      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.fillText(label, cx, cy);
+    if (isTop && resolution === 10) {
+      ctx.beginPath(); ctx.arc(cx, cy, circR + 6, 0, Math.PI * 2);
+      ctx.strokeStyle = NUM_COLOR; ctx.lineWidth = 1.5; ctx.stroke();
     }
+
+    ctx.font = circleFont(); ctx.fillStyle = color;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(label, cx, cy);
   }
+
+  // ── Bottom 1: measure glyph, position so bottom of glyph = sliderBot ──
+  ctx.font = numFont();
+  const m1  = ctx.measureText('1');
+  const glyphH = (m1.actualBoundingBoxAscent || 0) + (m1.actualBoundingBoxDescent || 0);
+  const botY   = sliderBot - (m1.actualBoundingBoxDescent || 0);
+  // Background wipe
+  ctx.fillStyle = '#f4f3f0';
+  ctx.fillRect(cx - bot1R, sliderBot - glyphH - 4, bot1R * 2, glyphH + 8);
+  ctx.font = numFont(); ctx.fillStyle = NUM_COLOR;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+  ctx.fillText('1', cx, sliderBot);
 
   // ── Handle ──
   ctx.beginPath(); ctx.arc(cx, hy, handleR, 0, Math.PI * 2);
@@ -373,8 +360,8 @@ function drawRatio() {
   if (lvA !== null && rvA !== null) {
     const lo = Math.min(lvA, rvA), hi = Math.max(lvA, rvA);
     const gap = hi - lo - 1;
-    offset   = gap > 0 ? gap : null;   // nothing shown when adjacent or same
-    rational = hi - lo + 1;            // always at least 1
+    offset   = gap > 0 ? gap : null;
+    rational = hi - lo + 1;
   } else if (rvA !== null && lvA === null) {
     rational = rvA;
   }
