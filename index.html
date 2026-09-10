@@ -361,7 +361,7 @@ function drawRatio() {
     const lo = Math.min(lvA, rvA), hi = Math.max(lvA, rvA);
     const gap = hi - lo - 1;
     offset   = gap > 0 ? gap : null;
-    rational = hi - lo + 1;
+    rational = Math.max(2, hi - lo + 1);
   } else if (rvA !== null && lvA === null) {
     rational = rvA;
   }
